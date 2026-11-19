@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="so" dir="ltr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Xafiiska Nabadgalyada MMJ</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Firebase SDKs -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-app.js";
+        import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged, createUserWithEmailAndPassword } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, addDoc, getDocs, query, where, serverTimestamp } from "https://www.gstatic.com/firebasejs/10.8.0/firebase-firestore.js";
+
+        const firebaseConfig = {
+            apiKey: "AIzaSyC4fVazGFMzGuGx3XfYAVLIp8m-XD3lBOQ",
+            authDomain: "srspceob.firebaseapp.com",
+            projectId: "srspceob",
+            storageBucket: "srspceob.appspot.com",
+            messagingSenderId: "429496606769",
+            appId: "1:429496606769:web:a62b8b9392e21b20468305"
+        };
+
+        const app = initializeApp(firebaseConfig);
+        const auth = getAuth(app);
+        const db = getFirestore(app);
+
+        window.appAuth = auth;
+        window.appDb = db;
+        window.firebaseFns = { signInWithEmailAndPassword, signOut, onAuthStateChanged, createUserWithEmailAndPassword, doc, getDoc, setDoc, updateDoc, deleteDoc, collection, addDoc, getDocs, query, where, serverTimestamp };
+
+        const loginView = document.getElementById('loginView');
+        const loadingView = document.getElementById('loadingView');
+        const stationDashboard = document.getElementById('stationDashboard');
+        const adminDashboard = document.getElementById('adminDashboard');
+        const authHeader = document.getElementById('authHeader');
+        const userEmailDisplay = document.getElementById('userEmailDisplay');
+        const loginForm = document.getElementById('loginForm');
+        const loginError = document.getElementById('loginError');
+        const logoutBtn = document.getElementById('logoutBtn');
+        const obCategory = document.getElementById('obCategory');
+        const customCategoryContainer = document.getElementById('customCategoryContainer');
+        const obForm = document.getElementById('obForm');
+        const createStationForm = document.getElementById('createStationForm');
+        const createStationError = document.getElementById('createStationError');
+        const createStationSuccess = document.getElementById('createStationSuccess');
+        const togglePasswordBtn = document.getElementById('togglePasswordBtn');
+        const loginPasswordInput = document.getElementById('loginPassword');
+
+        let allStationCases = [];
+        let allCasesMap = {};
+        let currentKebeleId = '';
+        let suspectImageBase64 = '';
+        let pendingDeleteId = null;
+
+        togglePasswordBtn.addEventListener('click', () => {
+            const isPassword = loginPasswordInput.type === 'password';
+            loginPasswordInput.type = isPassword ? 'text' : 'password';
+        });
+
+        window.handleImageUpload = (event) => {
+            const file = event.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(e) {
+                    suspectImageBase64 = e.target.result;
+                    const preview = document.getElementById('imagePreview');
+                    preview.src = suspectImageBase64;
+                    preview.classList.remove('hidden');
+                };
+                reader.readAsDataURL(file);
+            }
+        };
+
+        obCategory.addEventListener('change', (e) => {
+            if (e.target.value === 'Other') {
+                customCategoryContainer.classList.remove('hidden');
+                document.getElementById('obCustomCategory').setAttribute('required', 'true');
+            } else {
+                customCategoryContainer.classList.add('hidden');
+                document.getElementById('obCustomCategory').removeAttribute('required');
+            }
+        });
+
+        onAuthStateChanged(auth, async (user) => {
+            loadingView.classList.add('hidden');
+            if (user) {
+                loginView.classList.add('hidden');
+                authHeader.classList.remove('hidden');
+                userEmailDisplay.textContent = user.email;
+
+                try {
+                    const userDoc = await getDoc(doc(db, "users", user.uid));
+                    if (userDoc.exists()) {
+                        const data = userDoc.data();
+                        if (data.role === 'super_admin') {
+                            adminDashboard.classList.remove('hidden');
+                            loadSuperAdminFiles(db);
+                        } else {
+                            stationDashboard.classList.remove('hidden');
+                            currentKebeleId = data.kebeleId || data.kebeleid || 'KB-00';
+                            document.getElementById('stationCodeDisplay').textContent = `Xarunta: ${currentKebeleId}`;
+                            loadStationCases(db, currentKebeleId);
+                        }
+                    } else {
+                        stationDashboard.classList.add('hidden');
+                        adminDashboard.classList.add('hidden');
+                        alert("Cilad: Akoonkani kuma xirna nidaamka database-ka (Users collection).");
+                    }
+                } catch (err) {
+                    console.error("Error fetching user role:", err);
+                }
+            } else {
+                loginView.classList.remove('hidden');
+                stationDashboard.classList.add('hidden');
+                adminDashboard.classList.add('hidden');
+                authHeader.classList.add('hidden');
+            }
+        });
+
+        loginForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            loginError.classList.add('hidden');
+            const email = document.getElementById('loginEmail').value;
+            const pass = document.getElementById('loginPassword').value;
+
+            try {
+                await signInWithEmailAndPassword(auth, email, pass);
+            } catch (err) {
+                loginError.textContent = "Cilad ayaa dhacday: " + err.message;
+                loginError.classList.remove('hidden');
+            }
+        });
+
+        logoutBtn.addEventListener('click', async () => {
+            await signOut(auth);
+        });
+
+        obForm.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const categoryVal = obCategory.value === 'Other' ? document.getElementById('obCustomCategory').value : obCategory.value;
+
+            const recordData = {
+                kebeleid: currentKebeleId,
+                date: document.getElementById('obDate').value,
+                category: categoryVal,
+                informantName: document.getElementById('informantName').value,
+                informantPhone: document.getElementById('informantPhone').value,
+                informantFayda: document.getElementById('informantFayda').value,
+                informantRelation: document.getElementById('informantRelation').value,
+                suspectName: document.getElementById('obSuspect').value,
+                suspectPhone: document.getElementById('obPhone').value,
+                suspectImage: suspectImageBase64 || '',
+                description: document.getElementById('obDescription').value,
+                officerName: document.getElementById('officerName').value,
+                officerId: document.getElementById('officerId').value,
+                status: "Furan / Socda",
+                createdAt: serverTimestamp()
+            };
+
+            try {
+                await addDoc(collection(db, "occurrence_books"), recordData);
+                alert("Kiiska si guul leh ayaa loo diiwaan galiyay!");
+                obForm.reset();
+                document.getElementById('imagePreview').classList.add('hidden');
+                suspectImageBase64 = '';
+                customCategoryContainer.classList.add('hidden');
+                loadStationCases(db, currentKebeleId);
+            } catch (err) {
+                alert("Cilad ayaa dhacday keydinta kiiska: " + err.message);
+            }
+        });
+
+        window.updateCaseStatus = async (caseId, newStatus) => {
+            try {
+                await updateDoc(doc(db, "occurrence_books", caseId), { status: newStatus });
+                alert("Xaaladda kiiska si guul leh ayaa loo bedelay!");
+                loadStationCases(db, currentKebeleId);
+            } catch (err) {
+                alert("Cilad ayaa dhacday cusboonaysiinta: " + err.message);
+            }
+        };
+
+        window.deleteCaseRecord = async (caseId, btnElement) => {
+            if (!allCasesMap[caseId]) {
+                alert("Cilad: Xogta kiiska lama helin.");
+                return;
+            }
+
+            if (pendingDeleteId !== caseId) {
+                pendingDeleteId = caseId;
+                btnElement.textContent = "Ma hubtaa? Guji mar kale";
+                btnElement.classList.remove("bg-red-600", "hover:bg-red-700");
+                btnElement.classList.add("bg-amber-600", "hover:bg-amber-700");
+                setTimeout(() => {
+                    if (pendingDeleteId === caseId) {
+                        pendingDeleteId = null;
+                        btnElement.textContent = "Tirtir";
+                        btnElement.classList.remove("bg-amber-600", "hover:bg-amber-700");
+                        btnElement.classList.add("bg-red-600", "hover:bg-red-700");
+                    }
+                }, 4000);
+                return;
+            }
+
+            pendingDeleteId = null;
+            btnElement.disabled = true;
+            btnElement.textContent = "Waa la tirtirayaa...";
+
+            try {
+                await deleteDoc(doc(db, "occurrence_books", caseId));
+                delete allCasesMap[caseId];
+                alert("Kiiska si guul leh ayaa loo tirtiray!");
+                loadSuperAdminFiles(db);
+            } catch (err) {
+                alert("Cilad ayaa dhacday tirtiridda kiiska: " + err.message);
+                btnElement.disabled = false;
+                btnElement.textContent = "Tirtir";
+            }
+        };
+
+        async function loadStationCases(database, kebele) {
+            const container = document.getElementById('stationCasesList');
+            try {
+                const q = query(collection(database, "occurrence_books"), where("kebeleid", "==", kebele));
+                const querySnapshot = await getDocs(q);
+                allStationCases = [];
+                querySnapshot.forEach((docSnap) => {
+                    const caseItem = { id: docSnap.id, ...docSnap.data() };
+                    allStationCases.push(caseItem);
+                    allCasesMap[caseItem.id] = caseItem;
+                });
+                renderStationCases(allStationCases);
+            } catch (err) {
+                console.error("Error loading station cases:", err);
+                container.innerHTML = `<p class="text-red-500 text-sm text-center py-4">Cilad ayaa ka dhacday soo dejinta xogta.</p>`;
+            }
+        }
+
+        function renderStationCases(cases) {
+            const container = document.getElementById('stationCasesList');
+            container.innerHTML = "";
+            if (cases.length === 0) {
+                container.innerHTML = `<p class="text-slate-500 text-sm text-center py-4">Weli lama diiwaan gelin wax kiis ah xaruntan.</p>`;
+                return;
+            }
+            cases.sort((a, b) => new Date(b.date || 0) - new Date(a.date || 0));
+            cases.forEach((item) => {
+                allCasesMap[item.id] = item;
+                const imgHtml = item.suspectImage ? `<div class="mt-2"><img src="${item.suspectImage}" alt="Sawirka Eedeysanaha" class="w-20 h-20 object-cover rounded border shadow-sm"></div>` : '';
+                const statusColor = item.status === 'Xalilay / Dhamaaday' ? 'bg-emerald-100 text-emerald-800' : (item.status === 'Maxkamad La Gudbiyey' ? 'bg-purple-100 text-purple-800' : 'bg-amber-100 text-amber-800');
+
+                const div = document.createElement('div');
+                div.className = "p-4 border border-slate-200 rounded-xl bg-slate-50 space-y-2 shadow-sm text-sm";
+                div.innerHTML = `
+                    <div class="flex justify-between items-center border-b border-slate-200 pb-1.5">
+                        <span class="font-bold text-slate-900 text-base">Qeybta: ${item.category}</span>
+                        <span class="text-xs px-2.5 py-0.5 rounded-full font-semibold ${statusColor}">${item.status || 'Furan / Socda'}</span>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-2 text-slate-700">
+                        <p><strong>Soo Tabiye:</strong> ${item.informantName} (${item.informantPhone})</p>
+                        <p><strong>Eedeysanaha:</strong> ${item.suspectName || 'Lama yaqaan'} (Tel: ${item.suspectPhone || 'Lama hayo'})</p>
+                    </div>
+                    ${imgHtml}
+                    <p class="text-slate-600 bg-white p-2.5 rounded-lg border border-slate-200"><strong>Faahfaahin:</strong> ${item.description}</p>
+                    <div class="text-xs text-slate-500 flex justify-between pt-1">
+                        <span>Sarkaalka Qoray: ${item.officerName || 'Lama hayo'} (ID: ${item.officerId || 'N/A'})</span>
+                        <span class="text-slate-400">${item.date || ''}</span>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2 pt-2 border-t border-slate-200">
+                        <span class="text-xs font-bold text-slate-700">Bedel Xaaladda:</span>
+                        <button onclick="updateCaseStatus('${item.id}', 'Furan / Socda')" class="px-2.5 py-1 bg-amber-500 text-white rounded-md text-xs hover:bg-amber-600">Furan</button>
+                        <button onclick="updateCaseStatus('${item.id}', 'Xalilay / Dhamaaday')" class="px-2.5 py-1 bg-emerald-600 text-white rounded-md text-xs hover:bg-emerald-700">Xalilay / Dhamaaday</button>
+                        <button onclick="updateCaseStatus('${item.id}', 'Maxkamad La Gudbiyey')" class="px-2.5 py-1 bg-purple-600 text-white rounded-md text-xs hover:bg-purple-700">Maxkamad</button>
+                    </div>
+                `;
+                container.appendChild(div);
+            });
+        }
+
+        window.filterStationCases = () => {
+            const dateQuery = document.getElementById('searchDate').value;
+            const phoneQuery = document.getElementById('searchPhone').value.trim().toLowerCase();
+
+            const filtered = allStationCases.filter(item => {
+                const matchDate = dateQuery ? (item.date && item.date.includes(dateQuery)) : true;
+                const matchPhone = phoneQuery ? (item.suspectPhone && item.suspectPhone.toLowerCase().includes(phoneQuery)) : true;
+                return matchDate && matchPhone;
+            });
+            renderStationCases(filtered);
+        };
+
+        if (createStationForm) {
+            createStationForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                createStationError.classList.add('hidden');
+                createStationSuccess.classList.add('hidden');
+
+                const email = document.getElementById('stationEmail').value;
+                const password = document.getElementById('stationPassword').value;
+                const kebeleId = document.getElementById('stationCodeInput').value;
+
+                try {
+                    const userCredential = await createUserWithEmailAndPassword(auth, email, password);
+                    const uid = userCredential.user.uid;
+
+                    await setDoc(doc(db, "users", uid), {
+                        email: email,
+                        role: "station_user",
+                        kebeleid: kebeleId
+                    });
+
+                    createStationSuccess.textContent = `Akoonka saldhigga ${kebeleId} si guul leh ayaa loo abuuray!`;
+                    createStationSuccess.classList.remove('hidden');
+                    createStationForm.reset();
+                    loadSuperAdminFiles(db);
+                } catch (err) {
+                    createStationError.textContent = "Cilad: " + err.message;
+                    createStationError.classList.remove('hidden');
+                }
+            });
+        }
+
+        async function loadSuperAdminFiles(database) {
+            const filesContainer = document.getElementById('superAdminFilesContainer');
+            if (!filesContainer) return;
+            try {
+                const querySnapshot = await getDocs(collection(database, "occurrence_books"));
+                filesContainer.innerHTML = "";
+
+                if (querySnapshot.empty) {
+                    filesContainer.innerHTML = `<p class="text-slate-500 text-sm text-center py-4">Weli lama diiwaan gelin wax kiis ah saldhigyada.</p>`;
+                    return;
+                }
+
+                const kebeleMap = {};
+                querySnapshot.forEach((docSnap) => {
+                    const data = { id: docSnap.id, ...docSnap.data() };
+                    allCasesMap[data.id] = data;
+                    const kebele = data.kebeleid || data.kebeleId || 'Lama Aqoonsan';
+                    if (!kebeleMap[kebele]) {
+                        kebeleMap[kebele] = [];
+                    }
+                    kebeleMap[kebele].push(data);
+                });
+
+                Object.keys(kebeleMap).forEach((kebele) => {
+                    const cases = kebeleMap[kebele];
+                    const fileBox = document.createElement('div');
+                    fileBox.className = "border border-slate-200 rounded-xl bg-slate-50 shadow-sm overflow-hidden";
+
+                    let casesHtml = '';
+                    cases.forEach(item => {
+                        const imgHtml = item.suspectImage ? `<div class="mt-2"><img src="${item.suspectImage}" alt="Sawirka Eedeysanaha" class="w-20 h-20 object-cover rounded border shadow-sm"></div>` : '';
+                        const statusColor = item.status === 'Xalilay / Dhamaaday' ? 'bg-emerald-100 text-emerald-800' : (item.status === 'Maxkamad La Gudbiyey' ? 'bg-purple-100 text-purple-800' : 'bg-amber-100 text-amber-800');
+
+                        casesHtml += `
+                            <div class="p-3 bg-white border-t border-slate-200 space-y-1 text-sm">
+                                <div class="flex justify-between items-center font-bold text-slate-900">
+                                    <span>Qeybta: ${item.category}</span>
+                                    <div class="flex items-center space-x-2">
+                                        <span class="text-xs px-2 py-0.5 rounded-full font-semibold ${statusColor}">${item.status || 'Furan / Socda'}</span>
+                                        <button onclick="deleteCaseRecord('${item.id}', this)" class="bg-red-600 hover:bg-red-700 text-white px-2.5 py-0.5 rounded text-xs font-semibold">Tirtir</button>
+                                    </div>
+                                </div>
+                                <p><strong>Soo Tabiye:</strong> ${item.informantName} (${item.informantPhone})</p>
+                                <p><strong>Eedeysanaha:</strong> ${item.suspectName || 'Lama yaqaan'} (Tel: ${item.suspectPhone || 'Lama hayo'})</p>
+                                ${imgHtml}
+                                <p class="text-slate-600"><strong>Faahfaahin:</strong> ${item.description}</p>
+                                <p class="text-xs text-slate-500 pt-1">Sarkaalka Qoray: ${item.officerName || 'Lama hayo'} (ID: ${item.officerId || 'N/A'}) | Taariikhda: ${item.date || ''}</p>
+                            </div>
+                        `;
+                    });
+
+                    fileBox.innerHTML = `
+                        <button onclick="this.nextElementSibling.classList.toggle('hidden')" class="w-full px-4 py-3 bg-blue-50 hover:bg-blue-100 flex justify-between items-center font-bold text-slate-900 text-left transition">
+                            <span class="flex items-center space-x-2">
+                                <span>📁 Faylka Saldhigga: <strong class="text-blue-600">${kebele}</strong></span>
+                                <span class="bg-blue-100 text-blue-800 text-xs px-2 py-0.5 rounded-full">${cases.length} Kiis</span>
+                            </span>
+                            <span class="text-xs text-slate-500">Gujis si aad u furto / u xirto ▼</span>
+                        </button>
+                        <div class="hidden divide-y">${casesHtml}</div>
+                    `;
+                    filesContainer.appendChild(fileBox);
+                });
+            } catch (err) {
+                console.error("Error loading super admin files:", err);
+                filesContainer.innerHTML = `<p class="text-red-500 text-sm text-center py-4">Cilad ayaa ka dhacday soo dejinta faylasha.</p>`;
+            }
+        }
+    </script>
+</head>
+<body class="bg-[#f8fafc] font-sans text-slate-900 min-h-screen flex flex-col justify-between">
+
+    <!-- HEADER BAR FOR LOGGED-IN USERS -->
+    <header id="authHeader" class="hidden bg-white border-b border-slate-200 shadow-xs">
+        <div class="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-10 h-10 rounded-xl bg-slate-100 border border-slate-200 flex items-center justify-center overflow-hidden">
+                    <img src="images/1000131909.jpg" alt="SRSP Logo" class="w-full h-full object-cover">
+                </div>
+                <div>
+                    <p class="text-xs font-semibold text-slate-500">Xafiiska Nabadgalyada MMJ</p>
+                    <p class="text-sm font-bold text-slate-900">Nidaamka e-OB ee Qabaleeyada</p>
+                </div>
+            </div>
+            <div class="flex items-center space-x-2">
+                <span id="userEmailDisplay" class="text-xs bg-slate-100 text-slate-700 px-2.5 py-1 rounded-md border border-slate-200"></span>
+                <button id="logoutBtn" class="bg-red-600 hover:bg-red-700 text-white px-3 py-1 text-xs rounded-md font-semibold transition">Ka bax</button>
+            </div>
+        </div>
+    </header>
+
+    <!-- MAIN CONTAINER -->
+    <main class="max-w-4xl mx-auto px-4 py-8 flex-grow w-full flex flex-col justify-center">
+
+        <!-- LOADING VIEW -->
+        <div id="loadingView" class="flex flex-col items-center justify-center py-12">
+            <div class="animate-spin rounded-full h-10 w-10 border-b-2 border-[#2563eb] mb-2"></div>
+            <p class="text-slate-600 font-medium text-sm">Fadlan sug...</p>
+        </div>
+
+        <!-- LOGIN VIEW MATCHING REFERENCE INTERFACE -->
+        <div id="loginView" class="w-full max-w-md mx-auto py-4 hidden">
+            <div class="flex flex-col items-center text-center mb-7">
+                <div class="w-16 h-16 rounded-2xl bg-slate-100 border border-slate-200/80 shadow-xs flex items-center justify-center p-1.5 mb-4">
+                    <img src="images/1000131909.jpg" alt="Astaanta Xafiiska" class="w-full h-full object-contain rounded-xl">
+                </div>
+                <h1 class="text-2xl font-extrabold tracking-tight text-slate-900">Xafiiska Nabadgalyada MMJ</h1>
+                <p class="text-sm text-slate-500 mt-1">Gali Xogtada Si aad usii socoto</p>
+            </div>
+
+            <form id="loginForm" class="space-y-5">
+                <!-- Username / Email Field -->
+                <div>
+                    <label for="loginEmail" class="flex items-center gap-1.5 text-sm font-semibold text-slate-700 mb-2">
+                        <!-- User Icon -->
+                        <svg class="w-4 h-4 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"></path>
+                            <circle cx="12" cy="7" r="4"></circle>
+                        </svg>
+                        <span>Magaca Isticmaalaha (Email)</span>
+                    </label>
+                    <div class="relative flex items-center bg-white border-2 border-[#2563eb] rounded-xl px-3.5 py-2.5 shadow-xs focus-within:ring-2 focus-within:ring-blue-200">
+                        <span class="text-slate-400 font-semibold mr-2.5 select-none">@</span>
+                        <input type="email" id="loginEmail" required class="w-full bg-transparent text-slate-900 placeholder-slate-400 text-sm outline-none" placeholder="Gali email-kaaga...">
+                    </div>
+                </div>
+
+                <!-- Password Field -->
+                <div>
+                    <label for="loginPassword" class="flex items-center gap-1.5 text-sm font-semibold text-slate-700 mb-2">
+                        <!-- Key Icon -->
+                        <svg class="w-4 h-4 text-slate-500" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"></path>
+                        </svg>
+                        <span>Furaha Sirta ah</span>
+                    </label>
+                    <div class="relative flex items-center bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 shadow-xs focus-within:border-[#2563eb] focus-within:ring-2 focus-within:ring-blue-100">
+                        <!-- Lock Icon -->
+                        <svg class="w-4 h-4 text-slate-400 mr-2.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                            <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                            <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+                        </svg>
+                        <input type="password" id="loginPassword" required class="w-full bg-transparent text-slate-900 placeholder-slate-400 text-sm outline-none pr-8" placeholder="Gali furaha sirta ah">
+                        <!-- Eye Toggle Icon -->
+                        <button type="button" id="togglePasswordBtn" aria-label="Muuji ama qari furaha sirta ah" class="text-slate-400 hover:text-slate-600 focus:outline-none ml-1">
+                            <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                                <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"></path>
+                                <circle cx="12" cy="12" r="3"></circle>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- Remember Me Row -->
+                <div class="flex items-center justify-between text-xs pt-0.5">
+                    <label class="flex items-center gap-2 text-slate-700 cursor-pointer select-none">
+                        <input type="checkbox" id="rememberMe" class="w-4 h-4 rounded border-slate-300 text-[#2563eb] focus:ring-[#2563eb]">
+                        <span>I xusuusnow</span>
+                    </label>
+                    <span class="text-[#2563eb] font-medium">Nidaamka e-OB</span>
+                </div>
+
+                <!-- Submit Button -->
+                <button type="submit" class="w-full bg-[#2563eb] hover:bg-blue-700 text-white font-semibold py-3 rounded-xl shadow-sm transition flex items-center justify-center gap-2 text-sm">
+                    <span>Gal Nidaamka</span>
+                    <span aria-hidden="true">→</span>
+                </button>
+            </form>
+
+            <div id="loginError" class="mt-4 text-red-600 text-sm text-center hidden"></div>
+
+            <!-- Security Badge Footer -->
+            <div class="mt-8 text-center space-y-1">
+                <div class="inline-flex items-center justify-center gap-1.5 text-xs font-semibold text-emerald-600">
+                    <svg class="w-4 h-4 text-emerald-500" viewBox="0 0 24 24" fill="currentColor">
+                        <path d="M12 2L4 5v6.09c0 5.05 3.41 9.76 8 10.91 4.59-1.15 8-5.86 8-10.91V5l-8-3zm-1 14l-3-3 1.41-1.41L11 13.17l4.59-4.59L17 10l-6 6z"/>
+                    </svg>
+                    <span>Xogtaada Waa La Ilaaliyay · Nidaamka e-OB</span>
+                </div>
+                <p class="text-[11px] text-slate-400">Nidaamka Diiwaangelinta Qabaleeyada · 2026</p>
+            </div>
+        </div>
+
+        <!-- KEBELE / STATION USER DASHBOARD -->
+        <div id="stationDashboard" class="hidden space-y-6">
+            <div class="bg-white p-4 rounded-xl shadow-xs border border-slate-200 flex justify-between items-center">
+                <div>
+                    <span class="text-xs font-bold text-slate-400 uppercase tracking-wider">Xarunta / Qabalaha:</span>
+                    <h3 id="stationCodeDisplay" class="text-xl font-bold text-slate-900">Magaca Qabalaha (KB-00)</h3>
+                </div>
+                <span class="bg-emerald-100 text-emerald-800 text-xs font-semibold px-2.5 py-1 rounded-full">Isticmaalaha Qabalaha</span>
+            </div>
+
+            <!-- LOG NEW OCCURRENCE BOOK ENTRY FORM -->
+            <div class="bg-white p-6 rounded-xl shadow-xs border border-slate-200">
+                <h3 class="text-lg font-bold text-slate-900 mb-4 border-b border-slate-200 pb-2">📝 Diwaan Gali Kiis Cusub (e-OB)</h3>
+                <form id="obForm" class="space-y-4">
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-semibold text-slate-700 mb-1">Taariikhda & Waqtiga</label>
+                            <input type="datetime-local" id="obDate" required class="w-full px-3 py-2 border border-slate-200 rounded-xl outline-none focus:border-[#2563eb]">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-semibold text-slate-700 mb-1">Qeybta Kiiska</label>
+                            <select id="obCategory" required class="w-full px-3 py-2 border border-slate-200 rounded-xl bg-white outline-none focus:border-[#2563eb]">
+                                <option value="">-- Dooro Qeybta Kiiska --</option>
+                                <option value="Dagaal">Dagaal</option>
+                                <option value="Xatooyo">Xatooyo</option>
+                                <option value="Other">Other...</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div id="customCategoryContainer" class="hidden">
+                        <label class="block text-sm font-semibold text-slate-700 mb-1">Magaca Kiiska (Custom Incident Name)</label>
+                        <input type="text" id="obCustomCategory" class="w-full px-3 py-2 border border-slate-200 rounded-xl outline-none focus:border-[#2563eb]" placeholder="Gali magaca kiiska...">
+                    </div>
+
+                    <hr class="my-2 border-slate-200">
+                    <h4 class="text-md font-bold text-slate-800">Xogta Qofka Soo Tabiyey</h4>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-semibold text-slate-700 mb-1">Magaca Buuxa ee Soo Tabiye</label>
+                            <input type="text" id="informantName" required class="w-full px-3 py-2 border border-slate-200 rounded-xl outline-none focus:border-[#2563eb]" placeholder="Tusaale: Maxamed Cali Cumar">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-semibold text-slate-700 mb-1">Telefoonka Soo Tabiye</label>
+                            <input type="text" id="informantPhone" required class="w-full px-3 py-2 border border-slate-200 rounded-xl outline-none focus:border-[#2563eb]" placeholder="09XXXXXXXX">
+                        </div>
+                    </div>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-semibold text-slate-700 mb-1">Fayda ID (FAN)</label>
+                            <input type="text" id="informantFayda" class="w-full px-3 py-2 border border-slate-200 rounded-xl outline-none focus:border-[#2563eb]" placeholder="Gali FAN">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-semibold text-slate-700 mb-1">Xiriirka uu la leeyahay kiiska</label>
+                            <input type="text" id="informantRelation" class="w-full px-3 py-2 border border-slate-200 rounded-xl outline-none focus:border-[#2563eb]" placeholder="Tusaale: Dhibane, Daris, Qaraabo...">
+                        </div>
+                    </div>
+
+                    <hr class="my-2 border-slate-200">
+                    <h4 class="text-md font-bold text-slate-800">Faahfaahinta Eedeysanaha & Sawirka</h4>
+
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-semibold text-slate-700 mb-1">Magaca Eedeysanaha (Haddii la yaqaan)</label>
+                            <input type="text" id="obSuspect" class="w-full px-3 py-2 border border-slate-200 rounded-xl outline-none focus:border-[#2563eb]" placeholder="Magaca & Hooyadiis">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-semibold text-slate-700 mb-1">Telefoonka / EVC Plus Eedeysanaha</label>
+                            <input type="text" id="obPhone" class="w-full px-3 py-2 border border-slate-200 rounded-xl outline-none focus:border-[#2563eb]" placeholder="09XXXXXXXX / EVC">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-semibold text-slate-700 mb-1">Sawirka Eedeysanaha (Ka qaado Kaamirada ama soo geli)</label>
+                        <input type="file" id="suspectImageInput" accept="image/*" onchange="handleImageUpload(event)" class="w-full px-3 py-1.5 border border-slate-200 rounded-xl bg-white text-sm outline-none file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-[#2563eb] hover:file:bg-blue-100">
+                        <div class="mt-2">
+                            <img id="imagePreview" alt="Sawirka Eedeysanaha" class="w-24 h-24 object-cover rounded-lg border shadow-xs hidden">
+                        </div>
+                    </div>
+
+                    <div>
+                        <label class="block text-sm font-semibold text-slate-700 mb-1">Faahfaahinta Dhacdada</label>
+                        <textarea id="obDescription" rows="3" required class="w-full px-3 py-2 border border-slate-200 rounded-xl outline-none focus:border-[#2563eb]" placeholder="Qor halka, waqtiga, iyo sida ay wax u dhaceen..."></textarea>
+                    </div>
+
+                    <hr class="my-2 border-slate-200">
+                    <h4 class="text-md font-bold text-slate-800">Xogta Sarkaalka Diiwaangeliyay</h4>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div>
+                            <label class="block text-sm font-semibold text-slate-700 mb-1">Magaca Sarkaalka Qoray OB-ga</label>
+                            <input type="text" id="officerName" required class="w-full px-3 py-2 border border-slate-200 rounded-xl outline-none focus:border-[#2563eb]" placeholder="Magaca Sarkaalka...">
+                        </div>
+                        <div>
+                            <label class="block text-sm font-semibold text-slate-700 mb-1">Lambarka Sarkaalka Qoray OB-ga</label>
+                            <input type="text" id="officerId" required class="w-full px-3 py-2 border border-slate-200 rounded-xl outline-none focus:border-[#2563eb]" placeholder="Lambarka Aqoonsiga / Badge No...">
+                        </div>
+                    </div>
+
+                    <button type="submit" class="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-semibold py-3 rounded-xl transition shadow-xs">Diiwaan Gali Kiiskaan</button>
+                </form>
+            </div>
+
+            <!-- REGISTERED CASES SECTION FOR STATIONS -->
+            <div class="bg-white p-6 rounded-xl shadow-xs border border-slate-200 space-y-4">
+                <h3 class="text-lg font-bold text-slate-900 border-b border-slate-200 pb-2">📋 Kiisaska La Diiwaan Geliyay & Gacan Ku Haynta</h3>
+
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-3 bg-slate-50 p-3 rounded-xl border border-slate-200">
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">Raadi Taariikhda</label>
+                        <input type="date" id="searchDate" oninput="filterStationCases()" class="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-sm bg-white outline-none">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-semibold text-slate-600 mb-1">Raadi Telefoonka Eedeysanaha</label>
+                        <input type="text" id="searchPhone" oninput="filterStationCases()" placeholder="09XXXXXXXX" class="w-full px-3 py-1.5 border border-slate-200 rounded-lg text-sm bg-white outline-none">
+                    </div>
+                </div>
+
+                <div id="stationCasesList" class="space-y-3 max-h-[600px] overflow-y-auto">
+                    <p class="text-slate-500 text-sm text-center py-4">Xogta waa la soo dejinayaa...</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- SUPER ADMIN PANEL WITH FOLDERS/FILES PER KEBELE -->
+        <div id="adminDashboard" class="hidden space-y-6">
+            <div class="bg-white p-6 rounded-xl shadow-xs border border-slate-200 space-y-4">
+                <h3 class="text-xl font-bold text-slate-900 border-b border-slate-200 pb-2">Guddiga Maamulka Sare (Super Admin)</h3>
+
+                <div class="bg-slate-50 p-4 rounded-xl border border-slate-200">
+                    <h4 class="font-bold text-sm text-slate-800 mb-3">➕ Abuur Akoon Saldhig / Qaballe</h4>
+                    <form id="createStationForm" class="space-y-3">
+                        <div class="grid grid-cols-1 md:grid-cols-3 gap-2">
+                            <input type="email" id="stationEmail" placeholder="Email-ka Saldhigga" required class="px-3 py-2 border border-slate-200 rounded-xl text-sm bg-white outline-none focus:border-[#2563eb]">
+                            <input type="password" id="stationPassword" placeholder="Furaha Sirta ah" required class="px-3 py-2 border border-slate-200 rounded-xl text-sm bg-white outline-none focus:border-[#2563eb]">
+                            <input type="text" id="stationCodeInput" placeholder="Koodka Saldhigga (tusaale: KB-01)" required class="px-3 py-2 border border-slate-200 rounded-xl text-sm bg-white outline-none focus:border-[#2563eb]">
+                        </div>
+                        <button type="submit" class="bg-[#2563eb] hover:bg-blue-700 text-white font-semibold px-4 py-2 rounded-xl text-sm transition">Abuur Akoonka</button>
+                    </form>
+                    <div id="createStationError" class="text-red-600 text-xs mt-2 hidden"></div>
+                    <div id="createStationSuccess" class="text-emerald-600 text-xs mt-2 hidden"></div>
+                </div>
+
+                <div>
+                    <h4 class="font-bold text-sm text-slate-800 mb-2">📂 Faylasha Diiwaanka OB-yada Saldhigyada</h4>
+                    <p class="text-xs text-slate-500 mb-3">Guji magaca qabalaha/saldhigga si aad u akhriso kiisaska iyo xaaladooda.</p>
+                    <div id="superAdminFilesContainer" class="space-y-3 max-h-[600px] overflow-y-auto">
+                        <p class="text-slate-500 text-sm text-center py-4">Faylasha waa la soo dejinayaa...</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+    </main>
+
+    <!-- FOOTER WITH WHATSAPP LINK ON MOOGE SOLUTIONS -->
+    <footer class="py-5 px-4 text-center text-xs text-slate-500">
+        <p>
+            ©️ <a href="https://wa.me/251987103141" target="_blank" rel="noopener noreferrer" class="text-[#2563eb] hover:underline font-semibold">mooge solutions</a> 2026
+        </p>
+    </footer>
+</body>
+</html>
